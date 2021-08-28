@@ -536,12 +536,90 @@ final class IndexedDISI extends DocIdSetIterator {
     return cost;
   }
 
+  static class SliceRandReadHelper {
+    int startPointer;
+    IndexedDISI indexedDISI;
+    int startOffset;
+
+    public void init(IndexedDISI disi, int sOffset) {
+      indexedDISI = disi;
+      startPointer = (int) disi.slice.getFilePointer();
+      startOffset = sOffset;
+    }
+
+    public short readShortAtPos(int pos) throws IOException {
+      long seek = startPointer + (pos - startOffset) * 2;
+      indexedDISI.slice.seek(seek);
+      return indexedDISI.slice.readShort();
+    }
+  }
+
   enum Method {
     SPARSE {
       @Override
       boolean advanceWithinBlock(IndexedDISI disi, int target) throws IOException {
         final int targetInBlock = target & 0xFFFF;
         // TODO: binary search
+
+        //        if(disi.nextBlockIndex - disi.index > 32){
+        //          ///file point
+        //          int numBlock = disi.nextBlockIndex - disi.index;;
+        //          byte [] bytesBuffer = new byte[numBlock * 2];
+        //          disi.slice.readBytes(bytesBuffer, 0, numBlock * 2 );
+        //          int[] shortBuffer = new int[numBlock];
+        //          for( int j=0; j<numBlock; j++){
+        //            final byte b1 = bytesBuffer[j*2];
+        //            final byte b2 = bytesBuffer[j*2+1];
+        //            int sh = (int) (((b2 & 0xFF) << 8) | (b1 & 0xFF));
+        //            shortBuffer[j] = sh;
+        //          }
+        //          int findIndex = binarySearch(shortBuffer, 0, numBlock, targetInBlock);
+        //          int doc = shortBuffer[findIndex];
+        //          if (doc < targetInBlock) {
+        //            if(findIndex+1 < numBlock){
+        //              findIndex += 1;
+        //            }
+        //          }
+        //          disi.index = findIndex + disi.index;
+        //          if (doc >= targetInBlock) {
+        //            disi.doc = disi.block | doc;
+        //            disi.exists = true;
+        //            return true;
+        //          }
+        //        }
+        if (disi.nextBlockIndex - disi.index > 32) {
+          SliceRandReadHelper sliceRandReadHelper = new SliceRandReadHelper();
+          sliceRandReadHelper.init(disi, disi.index);
+          int low = disi.index;
+          int high = disi.nextBlockIndex;
+          int lastValue = 0;
+          while (low <= high) {
+            int middle = (low + high) / 2;
+            lastValue = sliceRandReadHelper.readShortAtPos(middle);
+            if (targetInBlock == lastValue) {
+              low = middle;
+              break;
+            } else if (targetInBlock < lastValue) {
+              high = middle - 1;
+            } else {
+              low = middle + 1;
+            }
+          }
+          int findIndex = low;
+          int doc = lastValue; // sliceRandReadHelper.readShortAtPos(findIndex);
+          if (doc < targetInBlock) {
+            if (findIndex + 1 < disi.nextBlockIndex) {
+              findIndex += 1;
+              doc = disi.slice.readShort();
+            }
+          }
+          disi.index = findIndex;
+          if (doc >= targetInBlock) {
+            disi.doc = disi.block | doc;
+            disi.exists = true;
+            return true;
+          }
+        } else {
         for (; disi.index < disi.nextBlockIndex; ) {
           int doc = Short.toUnsignedInt(disi.slice.readShort());
           disi.index++;
@@ -549,6 +627,7 @@ final class IndexedDISI extends DocIdSetIterator {
             disi.doc = disi.block | doc;
             disi.exists = true;
             return true;
+            }
           }
         }
         return false;
